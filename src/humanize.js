@@ -14,21 +14,21 @@ function pause(minMs, maxMs) {
 
 // A short pause most of the time, with an occasional longer one.
 async function pauseBetweenActions() {
-  if (Math.random() < 0.08) {
-    await pause(6000, 15000);
+  if (Math.random() < 0.06) {
+    await pause(5000, 12000);
   } else {
-    await pause(1500, 5000);
+    await pause(1000, 3000);
   }
 }
 
 // Every so often, take a real break.
 function shouldTakeBreak(actionsSinceBreak) {
-  const threshold = 12 + Math.floor(Math.random() * 14);
+  const threshold = 15 + Math.floor(Math.random() * 16);
   return actionsSinceBreak >= threshold;
 }
 
 async function takeBreak() {
-  await pause(20000, 60000);
+  await pause(15000, 40000);
 }
 
 async function typeLikeAPerson(locator, text) {

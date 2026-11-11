@@ -16,6 +16,29 @@ const SEARCH_BOX = 'input[placeholder="Search by merchant"]';
 const USERNAME_INPUT = 'input[id$="_username"]';
 const PASSWORD_INPUT = 'input[id$="_password"]';
 const REMEMBER_ME = 'input[id$="_rememberMe"]';
+const ENROLL_BUTTON = 'button[aria-label^="Enroll in Offer for"]';
+
+// The merchant name in a button label. Citi cuts long names short with "...".
+function shownNameFromLabel(label) {
+  return String(label || '').replace(/^Enroll in Offer for\s*/, '');
+}
+
+function normalizeName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/(\.\.\.|…)\s*$/, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function namesMatch(shownName, merchantName) {
+  const shown = normalizeName(shownName);
+  const full = normalizeName(merchantName);
+  if (!shown || !full) {
+    return false;
+  }
+  const truncated = /(\.\.\.|…)\s*$/.test(String(shownName));
+  return shown === full || (truncated && shown.length >= 5 && full.startsWith(shown));
+}
 
 class StopRequested extends Error {
   constructor() {
@@ -281,33 +304,45 @@ class CitiSession {
     return this.latestList;
   }
 
-  async enrollOne(accountId, offer) {
-    const page = this.page;
-    const search = page.locator(SEARCH_BOX).first();
-    await human.typeLikeAPerson(search, offer.merchantName);
-    await human.pause(1200, 2500);
+  async visibleEnrollButtons() {
+    const buttons = this.page.locator(ENROLL_BUTTON).filter({ visible: true });
+    const labels = await buttons.evaluateAll((elements) => elements.map((e) => e.getAttribute('aria-label')));
+    return labels.map((label, index) => ({
+      label,
+      shownName: shownNameFromLabel(label),
+      locator: buttons.nth(index),
+    }));
+  }
 
-    const button = page
-      .getByRole('button', { name: `Enroll in Offer for ${offer.merchantName}`, exact: true })
-      .filter({ visible: true })
-      .first();
-    if ((await button.count()) === 0) {
-      return { outcome: 'skipped', reason: 'not shown on the page' };
+  async clearSearch() {
+    const search = this.page.locator(SEARCH_BOX).first();
+    if ((await search.inputValue()) === '') {
+      return;
     }
+    await search.click();
+    await this.page.keyboard.press('Control+A');
+    await this.page.keyboard.press('Backspace');
+    await human.pause(1200, 2500);
+  }
 
+  // Citi's response names the exact offer and card, so that is what gets saved,
+  // whatever the button label said.
+  async clickEnrollButton(locator) {
+    const page = this.page;
     const enrollResponse = page.waitForResponse(
       (response) => response.url().includes(ENROLL_API) && response.request().method() === 'POST',
       { timeout: 30000 },
     );
-    await human.clickLikeAPerson(button);
+    await human.clickLikeAPerson(locator);
     const response = await enrollResponse;
     if (!response.ok()) {
       return { outcome: 'failed', reason: `Citi answered ${response.status()}` };
     }
+    const accountId = JSON.parse(response.request().postData() || '{}').accountId;
     const saved = recordEnrollment(accountId, await response.json());
 
     // Look at the popup for a moment, then close it.
-    await human.pause(1500, 4000);
+    await human.pause(1000, 2500);
     const closeButton = page.locator('[role="dialog"] button[aria-label="Close"]').filter({ visible: true }).first();
     if ((await closeButton.count()) > 0) {
       await human.clickLikeAPerson(closeButton);
@@ -315,6 +350,23 @@ class CitiSession {
       await page.keyboard.press('Escape');
     }
     return { outcome: 'enrolled', offer: saved };
+  }
+
+  async enrollBySearch(offer) {
+    const search = this.page.locator(SEARCH_BOX).first();
+    await human.typeLikeAPerson(search, offer.merchantName);
+    await human.pause(1200, 2500);
+
+    const buttons = await this.visibleEnrollButtons();
+    let match = buttons.find((b) => namesMatch(b.shownName, offer.merchantName));
+    if (!match && buttons.length === 1) {
+      match = buttons[0];
+    }
+    if (!match) {
+      const shown = buttons.slice(0, 3).map((b) => b.shownName).join(', ') || 'nothing';
+      return { outcome: 'skipped', reason: `no matching enroll button (showed ${shown})` };
+    }
+    return this.clickEnrollButton(match.locator);
   }
 
   // Priority stores first so they get done even if a run is cut short.
@@ -345,41 +397,110 @@ class CitiSession {
         continue;
       }
       rememberCard(list.accountId, label);
-      const toEnroll = this.orderOffers(list.offers);
-      this.log(`${label}: ${toEnroll.length} offer(s) to enroll.`);
+      const available = this.orderOffers(list.offers);
+      this.log(`${label}: ${available.length} offer(s) to enroll.`);
+      if (available.length === 0) {
+        continue;
+      }
 
-      let sinceBreak = 0;
-      for (const offer of toEnroll) {
-        this.checkStop();
-        try {
-          const result = await this.enrollOne(list.accountId, offer);
-          if (result.outcome === 'enrolled') {
-            summary.enrolled.push({ card: label, merchant: offer.merchantName, title: offer.offerTitle });
-            this.log(`Enrolled ${offer.merchantName} (${offer.offerTitle}) on ${label}.`);
-          } else if (result.outcome === 'skipped') {
-            summary.skipped.push({ card: label, merchant: offer.merchantName, reason: result.reason });
-            this.log(`Skipped ${offer.merchantName}: ${result.reason}.`);
-          } else {
-            summary.failed.push({ card: label, merchant: offer.merchantName, reason: result.reason });
-            this.log(`Could not enroll ${offer.merchantName}: ${result.reason}.`);
-          }
-        } catch (error) {
-          if (error instanceof StopRequested) {
-            throw error;
-          }
-          summary.failed.push({ card: label, merchant: offer.merchantName, reason: error.message });
-          this.log(`Could not enroll ${offer.merchantName}: ${error.message}`);
-          await this.page.keyboard.press('Escape').catch(() => {});
-        }
+      const card = { label, enrolledIds: new Set(), summary, sinceBreak: 0 };
+      const keywords = this.settings.priorityKeywords;
 
-        sinceBreak += 1;
-        if (human.shouldTakeBreak(sinceBreak)) {
-          sinceBreak = 0;
-          await human.takeBreak();
-        } else {
-          await human.pauseBetweenActions();
+      // 1. Priority stores by search, so they are done first.
+      const priority = available.filter((o) => isPriorityMerchant(o.merchantName, keywords));
+      for (const offer of priority) {
+        await this.attempt(card, offer, () => this.enrollBySearch(offer));
+      }
+
+      // 2. Everything the page shows, clicked straight from the list. This is the fast part.
+      await this.clearSearch();
+      await this.enrollVisibleOffers(card);
+
+      // 3. Whatever is left, by search.
+      const leftovers = available.filter((o) => !card.enrolledIds.has(o.offerId));
+      if (leftovers.length > 0) {
+        this.log(`${label}: searching for ${leftovers.length} offer(s) the list didn't show.`);
+      }
+      for (const offer of leftovers) {
+        if (!card.enrolledIds.has(offer.offerId)) {
+          await this.attempt(card, offer, () => this.enrollBySearch(offer));
         }
       }
+      await this.clearSearch();
+    }
+  }
+
+  async enrollVisibleOffers(card) {
+    const keywords = this.settings.priorityKeywords;
+    const attemptsByLabel = new Map();
+    let scrolledForMore = false;
+
+    while (true) {
+      this.checkStop();
+      const candidates = (await this.visibleEnrollButtons())
+        .filter((b) => (attemptsByLabel.get(b.label) || 0) < 2);
+
+      if (candidates.length === 0) {
+        if (scrolledForMore) {
+          return;
+        }
+        // The page may render more offers further down.
+        scrolledForMore = true;
+        await this.scrollThroughPage();
+        continue;
+      }
+      scrolledForMore = false;
+
+      const priority = candidates.filter((b) => isPriorityMerchant(b.shownName, keywords));
+      const pool = priority.length > 0 ? priority : candidates.slice(0, 4);
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      attemptsByLabel.set(pick.label, (attemptsByLabel.get(pick.label) || 0) + 1);
+
+      await this.attempt(card, { merchantName: pick.shownName }, () => this.clickEnrollButton(pick.locator));
+    }
+  }
+
+  async scrollThroughPage() {
+    for (let step = 0; step < 12; step++) {
+      await this.page.mouse.wheel(0, human.randomBetween(500, 900));
+      await human.pause(300, 700);
+    }
+    await human.pause(1000, 2000);
+    await this.scrollToTop();
+  }
+
+  // Runs one enrollment, records the outcome, then waits a random time.
+  async attempt(card, offer, enroll) {
+    this.checkStop();
+    const { summary, label } = card;
+    try {
+      const result = await enroll();
+      if (result.outcome === 'enrolled') {
+        card.enrolledIds.add(result.offer.offerId);
+        summary.enrolled.push({ card: label, merchant: result.offer.merchantName, title: result.offer.title });
+        this.log(`Enrolled ${result.offer.merchantName} (${result.offer.title}) on ${label}.`);
+      } else if (result.outcome === 'skipped') {
+        summary.skipped.push({ card: label, merchant: offer.merchantName, reason: result.reason });
+        this.log(`Skipped ${offer.merchantName}: ${result.reason}.`);
+      } else {
+        summary.failed.push({ card: label, merchant: offer.merchantName, reason: result.reason });
+        this.log(`Could not enroll ${offer.merchantName}: ${result.reason}.`);
+      }
+    } catch (error) {
+      if (error instanceof StopRequested) {
+        throw error;
+      }
+      summary.failed.push({ card: label, merchant: offer.merchantName, reason: error.message });
+      this.log(`Could not enroll ${offer.merchantName}: ${error.message}`);
+      await this.page.keyboard.press('Escape').catch(() => {});
+    }
+
+    card.sinceBreak += 1;
+    if (human.shouldTakeBreak(card.sinceBreak)) {
+      card.sinceBreak = 0;
+      await human.takeBreak();
+    } else {
+      await human.pauseBetweenActions();
     }
   }
 
