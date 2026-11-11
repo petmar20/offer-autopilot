@@ -1,0 +1,59 @@
+{
+  "name": "offer-autopilot",
+  "productName": "Offer Autopilot",
+  "version": "0.1.0",
+  "description": "Signs in to Citi on a schedule and enrolls every Merchant Offer on your cards.",
+  "main": "src/main.js",
+  "author": "Marlin Petre",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/petmar20/offer-autopilot.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "playwright-core": "^1.65.0"
+  },
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.petmar20.offerautopilot",
+    "productName": "Offer Autopilot",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/playwright-core/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "artifactName": "OfferAutopilot-Setup-${version}.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "petmar20",
+      "repo": "offer-autopilot",
+      "releaseType": "release"
+    }
+  }
+}

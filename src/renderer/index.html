@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'">
+  <title>Offer Autopilot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../../build/icon.png" alt="" class="brand-icon">
+      <div>
+        <div class="brand-name">Offer Autopilot</div>
+        <div class="status" id="status-line">Loading</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="update-button" class="secondary hidden"></button>
+      <button id="run-button" class="primary">Run now</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="offers">Offers</button>
+    <button class="tab" data-tab="activity">Activity</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-offers" class="tab-panel">
+      <div class="stats" id="stats"></div>
+      <div class="filters">
+        <input id="offer-search" type="search" placeholder="Search stores">
+        <select id="offer-filter">
+          <option value="active">Current offers</option>
+          <option value="priority">Priority stores</option>
+          <option value="enrolled">Enrolled</option>
+          <option value="available">Not enrolled</option>
+          <option value="expired">Expired</option>
+          <option value="all">All</option>
+        </select>
+        <select id="card-filter"></select>
+      </div>
+      <div id="offer-list" class="offer-list"></div>
+    </section>
+
+    <section id="tab-activity" class="tab-panel hidden">
+      <div id="live-panel" class="panel hidden">
+        <div class="panel-title">Running now</div>
+        <pre id="live-log" class="log"></pre>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Past runs</div>
+        <div id="run-list"></div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab-panel hidden">
+      <form id="settings-form" class="panel settings">
+        <div class="panel-title">Citi sign-in</div>
+        <label>User ID
+          <input id="username" autocomplete="off">
+        </label>
+        <label>Password
+          <input id="password" type="password" autocomplete="off">
+        </label>
+        <p class="hint" id="password-hint"></p>
+
+        <div class="panel-title">Schedule</div>
+        <div class="row">
+          <label>Run every
+            <select id="interval-days">
+              <option value="1">day</option>
+              <option value="2">2 days</option>
+              <option value="3">3 days</option>
+              <option value="5">5 days</option>
+              <option value="7">week</option>
+            </select>
+          </label>
+          <label>Between
+            <select id="window-start"></select>
+          </label>
+          <label>and
+            <select id="window-end"></select>
+          </label>
+        </div>
+        <p class="hint">Each run starts at a random time in this window.</p>
+        <label class="checkbox">
+          <input id="open-at-login" type="checkbox">
+          Start when I sign in to Windows
+        </label>
+
+        <div class="panel-title">Priority stores</div>
+        <p class="hint">One per line. These are enrolled first and listed at the top.</p>
+        <textarea id="priority-keywords" rows="10"></textarea>
+        <button type="button" id="reset-keywords" class="link">Reset to the default list</button>
+
+        <div class="form-actions">
+          <button type="submit" class="primary">Save</button>
+          <span id="save-message" class="hint"></span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
