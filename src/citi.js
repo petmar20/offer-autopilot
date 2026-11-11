@@ -64,6 +64,7 @@ class CitiSession {
     this.notify = notify;
     this.shouldStop = shouldStop;
     this.latestList = { count: 0, accountId: null, offers: [] };
+    this.listLabel = null;
   }
 
   checkStop() {
@@ -170,13 +171,10 @@ class CitiSession {
   }
 
   async listCards() {
-    const page = this.page;
-    await human.clickLikeAPerson(page.locator(CARD_SELECTOR));
-    await human.pause(600, 1400);
-    const labels = await page.locator('[role="option"]').evaluateAll((options) =>
+    await this.openCardDropdown();
+    const labels = await this.page.locator('[role="option"]').evaluateAll((options) =>
       options.filter((o) => o.offsetParent !== null).map((o) => o.textContent.trim()));
-    await page.keyboard.press('Escape');
-    await human.pause(500, 1200);
+    await this.closeCardDropdown();
     return labels;
   }
 
@@ -184,23 +182,101 @@ class CitiSession {
     return (await this.page.locator(CARD_SELECTOR).innerText()).trim();
   }
 
+  async isCardDropdownOpen() {
+    const expanded = await this.page.locator(CARD_SELECTOR).getAttribute('aria-expanded');
+    return expanded === 'true' && (await isVisible(this.page.getByRole('option')));
+  }
+
+  // The dropdown sits at the top of a long page and sometimes ignores a click, so check and retry.
+  async openCardDropdown() {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.dismissPopups();
+      await this.scrollToTop();
+      if (!(await this.isCardDropdownOpen())) {
+        await human.clickLikeAPerson(this.page.locator(CARD_SELECTOR));
+      }
+      if (await waitUntil(() => this.isCardDropdownOpen(), 5000, this.shouldStop)) {
+        await human.pause(500, 1200);
+        return;
+      }
+      await human.pause(1000, 2500);
+    }
+    throw new Error('The card list did not open.');
+  }
+
+  async closeCardDropdown() {
+    if (await this.isCardDropdownOpen()) {
+      await this.page.keyboard.press('Escape');
+      await human.pause(400, 900);
+    }
+    if (await this.isCardDropdownOpen()) {
+      await human.clickLikeAPerson(this.page.locator(CARD_SELECTOR));
+      await human.pause(400, 900);
+    }
+  }
+
+  async scrollToTop() {
+    await this.page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+    await human.pause(700, 1500);
+  }
+
+  async dismissPopups() {
+    const closeButton = this.page.locator('[role="dialog"] button[aria-label="Close"]').filter({ visible: true }).first();
+    if ((await closeButton.count()) > 0) {
+      await human.clickLikeAPerson(closeButton).catch(() => {});
+      await human.pause(500, 1200);
+    }
+  }
+
+  // Load the page again and note which card it opened on.
+  async reloadOffersPage() {
+    const countBefore = this.latestList.count;
+    this.listLabel = null;
+    await this.openMerchantOffers();
+    if (!(await waitUntil(() => this.latestList.count > countBefore, 45000, this.shouldStop))) {
+      throw new Error('The offer list did not load.');
+    }
+    this.listLabel = await this.currentCardLabel();
+    await human.pause(2000, 4000);
+  }
+
   // Returns the account id and offer list for the chosen card.
   async selectCard(label) {
-    const page = this.page;
-    const alreadySelected = (await this.currentCardLabel()) === label;
-    if (alreadySelected && this.latestList.accountId) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await this.trySelectCard(label);
+      } catch (error) {
+        if (error instanceof StopRequested || attempt === 3) {
+          throw error;
+        }
+        this.log(`Switching to ${label} didn't work (${error.message}). Trying again.`);
+        await human.pause(3000, 6000);
+        await this.reloadOffersPage();
+      }
+    }
+    throw new Error(`Could not switch to ${label}.`);
+  }
+
+  async trySelectCard(label) {
+    // listLabel is the card the latest offer list belongs to. Only trust it when it is known.
+    if (this.listLabel === label && (await this.currentCardLabel()) === label) {
       return this.latestList;
     }
 
     const countBefore = this.latestList.count;
-    await human.clickLikeAPerson(page.locator(CARD_SELECTOR));
-    await human.pause(600, 1400);
-    await human.clickLikeAPerson(page.getByRole('option', { name: label, exact: true }));
+    this.listLabel = null;
+    await this.openCardDropdown();
+    await human.clickLikeAPerson(this.page.getByRole('option', { name: label, exact: true }));
 
+    const switched = await waitUntil(async () => (await this.currentCardLabel()) === label, 10000, this.shouldStop);
+    if (!switched) {
+      throw new Error('the card did not change');
+    }
     const loaded = await waitUntil(() => this.latestList.count > countBefore, 45000, this.shouldStop);
     if (!loaded) {
-      throw new Error(`The offers for ${label} did not load.`);
+      throw new Error('its offers did not load');
     }
+    this.listLabel = label;
     await human.pause(2000, 4000);
     return this.latestList;
   }
@@ -256,7 +332,18 @@ class CitiSession {
 
     for (const label of human.shuffle(cardLabels)) {
       this.checkStop();
-      const list = await this.selectCard(label);
+      let list;
+      try {
+        list = await this.selectCard(label);
+      } catch (error) {
+        if (error instanceof StopRequested) {
+          throw error;
+        }
+        // Skip this card but still do the others.
+        summary.cardErrors.push(`Could not open the offers for ${label}: ${error.message}.`);
+        this.log(`Could not open the offers for ${label}: ${error.message}. Moving on.`);
+        continue;
+      }
       rememberCard(list.accountId, label);
       const toEnroll = this.orderOffers(list.offers);
       this.log(`${label}: ${toEnroll.length} offer(s) to enroll.`);
@@ -299,7 +386,7 @@ class CitiSession {
   async run() {
     const { context, channel } = await launchBrowser();
     this.log(`Opened ${channel === 'chrome' ? 'Chrome' : 'Edge'}.`);
-    const summary = { enrolled: [], skipped: [], failed: [] };
+    const summary = { enrolled: [], skipped: [], failed: [], cardErrors: [] };
     try {
       this.page = context.pages()[0] || (await context.newPage());
       this.watchOfferLists();
@@ -309,8 +396,12 @@ class CitiSession {
       if (!listLoaded) {
         throw new Error('The offer list did not load.');
       }
+      this.listLabel = await this.currentCardLabel();
       await human.pause(2000, 5000);
       await this.enrollEverything(summary);
+      if (summary.cardErrors.length > 0) {
+        throw new Error(summary.cardErrors.join(' '));
+      }
       return summary;
     } catch (error) {
       error.summary = summary;

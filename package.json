@@ -1,7 +1,7 @@
 {
   "name": "offer-autopilot",
   "productName": "Offer Autopilot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Signs in to Citi on a schedule and enrolls every Merchant Offer on your cards.",
   "main": "src/main.js",
   "author": "Marlin Petre",
