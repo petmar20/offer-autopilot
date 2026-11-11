@@ -18,6 +18,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # electron-builder uploads files in parallel; with no release yet, each upload makes its own.
+      - name: Create draft release
+        run: gh release create ${{ github.ref_name }} --draft --verify-tag --title ${{ github.ref_name }} --notes " "
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release
+        run: gh release edit ${{ github.ref_name }} --draft=false --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
